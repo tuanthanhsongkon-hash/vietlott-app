@@ -4,38 +4,38 @@ import numpy as np
 import json
 import random
 import requests
+import cloudscraper # Thêm thư viện mới
+from bs4 import BeautifulSoup # Thêm thư viện mới
 from collections import defaultdict
 from itertools import combinations
 import streamlit.components.v1 as components
+import re
 
-# Cấu hình trang (Streamlit sẽ đọc file .streamlit/config.toml để áp dụng Dark Mode)
+# Cấu hình trang
 st.set_page_config(layout="wide", page_title="Vietlott Multi-Product Inertia Simulator")
 st.title("🎲 Vietlott Analyzer & Inertia Simulator (Nâng cấp)")
 
 # ============================================================
-# CẤU HÌNH SẢN PHẨM (Đã thêm Keno, Max 3D, Max 3D Pro)
+# CẤU HÌNH SẢN PHẨM (Cập nhật Link HTML thật)
 # ============================================================
 PRODUCTS = {
     "Mega 6/45": {
         "type": "standard", "main_count": 6, "main_max": 45, "has_bonus": False, "bonus_max": None,
-        "default_url": "https://raw.githubusercontent.com/leoodz/vn-vietlott/main/results/power6x55.json" # Dùng tạm nguồn ổn định
+        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/so-ket-qua?gameid=3&nocatche=1"
     },
     "Power 6/55": {
         "type": "standard", "main_count": 6, "main_max": 55, "has_bonus": True, "bonus_max": 55,
-        "default_url": "https://raw.githubusercontent.com/leoodz/vn-vietlott/main/results/power6x55.json"
+        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/so-ket-qua?gameid=4&nocatche=1"
     },
     "Lotto 5/35": {
         "type": "standard", "main_count": 5, "main_max": 35, "has_bonus": True, "bonus_max": 12,
-        "default_url": "" # Sẽ dùng dữ liệu mẫu nếu không có link
+        "default_url": "" 
     },
     "Keno (1-80)": {
         "type": "keno", "main_count": 20, "main_max": 80, "has_bonus": False, "bonus_max": None,
         "default_url": ""
     },
     "Max 3D": {
-        "type": "max3d", "digit_count": 3, "total_balls": 100, "default_url": ""
-    },
-    "Max 3D Pro": {
         "type": "max3d", "digit_count": 3, "total_balls": 100, "default_url": ""
     }
 }
@@ -48,20 +48,75 @@ product_name = st.sidebar.selectbox("Chọn loại hình:", list(PRODUCTS.keys()
 cfg = PRODUCTS[product_name]
 
 st.sidebar.header("📂 Nguồn dữ liệu")
-data_source = st.sidebar.radio("Chọn nguồn:", ["Dữ liệu mẫu (giả lập)", "URL (GitHub - tự động)"])
+data_source = st.sidebar.radio("Chọn nguồn:", ["Dữ liệu mẫu (giả lập)", "URL (Web Vietlott - Tự động)"])
 
 # ============================================================
-# HÀM TẢI DỮ LIỆU & GIẢ LẬP
+# HÀM CÀO DỮ LIỆU TỪ WEB VIETLOTT
 # ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_json_from_url(url: str):
+def crawl_html_from_vietlott(url: str, product_type: str):
     try:
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        return r.json()
+        # Dùng cloudscraper để vượt Cloudflare
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+        response = scraper.get(url, timeout=20)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'lxml')
+        records = []
+        
+        # Tìm kiếm phần tử chứa kết quả (Vietlott thường dùng thẻ div hoặc table với class chứa 'chitietketqua')
+        # Đoạn code này giả định cấu trúc HTML của vietlott.vn chứa các con số trong thẻ span có class 'txt-rs'
+        # Bạn có thể cần Inspect (F12) trang web để tinh chỉnh class nếu cần
+        
+        # Lấy danh sách các kỳ quay (Thường nằm trong các thẻ <div class="chitietketqua"> hoặc tương tự)
+        rows = soup.find_all('div', class_='chitietketqua') 
+        if not rows:
+            # Thử cách khác: tìm thẻ chứa class 'ketqua'
+            rows = soup.find_all('div', class_='ketqua')
+        
+        if not rows:
+            # Nếu không tìm thấy, thử tìm tất cả các số có class 'txt-rs' (đây là class phổ biến của vietlott)
+            # Đây là fallback cho cấu trúc trang hiện tại
+            number_elements = soup.find_all('span', class_='txt-rs')
+            if number_elements:
+                nums = [int(el.text.strip()) for el in number_elements if el.text.strip().isdigit()]
+                # Nhóm 6 số (hoặc 5 số) thành 1 kỳ quay
+                size = cfg["main_count"]
+                for i in range(0, len(nums), size):
+                    if i + size <= len(nums):
+                        records.append({"date": pd.Timestamp.today(), "numbers": sorted(nums[i:i+size]), "bonus": None})
+                return pd.DataFrame(records)
+            else:
+                raise ValueError("Không tìm thấy cấu trúc dữ liệu phù hợp trên trang.")
+
+        # Xử lý từng dòng kết quả (nếu có cấu trúc bảng)
+        for row in rows:
+            # Trích xuất ngày tháng (cần tinh chỉnh tùy theo cấu trúc thực tế)
+            date_text = row.find('span', class_='ngay') or row.find('td', class_='ngay')
+            date_val = pd.to_datetime(date_text.text.strip(), dayfirst=True, errors='coerce') if date_text else pd.Timestamp.today()
+            
+            # Trích xuất các con số
+            num_elements = row.find_all('span', class_='txt-rs')
+            nums = [int(el.text.strip()) for el in num_elements if el.text.strip().isdigit()]
+            
+            if len(nums) >= cfg["main_count"]:
+                records.append({
+                    "date": date_val,
+                    "numbers": sorted(nums[:cfg["main_count"]]),
+                    "bonus": int(nums[cfg["main_count"]]) if len(nums) > cfg["main_count"] else None
+                })
+                
+        if not records:
+            raise ValueError("Không thể bóc tách dữ liệu từ HTML.")
+            
+        return pd.DataFrame(records).sort_values('date').reset_index(drop=True)
+        
     except Exception as e:
         return {"__error__": str(e)}
 
+# ============================================================
+# HÀM DỮ LIỆU MẪU (Giữ nguyên)
+# ============================================================
 def generate_sample_data(n_draws: int, cfg: dict):
     np.random.seed(42)
     records = []
@@ -71,17 +126,16 @@ def generate_sample_data(n_draws: int, cfg: dict):
             mains = sorted(np.random.choice(range(1, cfg["main_max"] + 1), size=cfg["main_count"], replace=False).tolist())
             bonus = None
             if cfg["has_bonus"]:
-                if cfg["main_max"] == 55: # Power 6/55
+                if cfg["main_max"] == 55:
                     remaining = [n for n in range(1, 56) if n not in mains]
                     bonus = int(np.random.choice(remaining))
-                else: # Lotto 5/35
+                else:
                     bonus = int(np.random.randint(1, 13))
             records.append({"date": d, "numbers": mains, "bonus": bonus})
         elif cfg["type"] == "keno":
             mains = sorted(np.random.choice(range(1, 81), size=20, replace=False).tolist())
             records.append({"date": d, "numbers": mains, "bonus": None})
         elif cfg["type"] == "max3d":
-            # Max 3D: Giả lập 20 bộ số 3 chữ số (000-999) mỗi kỳ
             results = []
             for _ in range(20):
                 digits = [int(x) for x in str(np.random.randint(0, 1000)).zfill(3)]
@@ -93,34 +147,19 @@ def generate_sample_data(n_draws: int, cfg: dict):
 # NẠP DỮ LIỆU
 # ============================================================
 df = None
-if data_source == "URL (GitHub - tự động)":
-    url = st.sidebar.text_input("URL JSON:", cfg.get("default_url", ""))
-    if st.sidebar.button("🔄 Tải dữ liệu") and url:
-        with st.spinner("Đang tải dữ liệu thật..."):
-            raw = fetch_json_from_url(url)
-            if "__error__" in raw:
-                st.warning(f"Không tải được dữ liệu từ URL. Dùng dữ liệu mẫu. Lỗi: {raw['__error__']}")
+if data_source == "URL (Web Vietlott - Tự động)":
+    url = st.sidebar.text_input("URL Trang Kết Quả:", cfg.get("default_url", ""))
+    if st.sidebar.button("🔄 Tải dữ liệu từ Web") and url:
+        with st.spinner("Đang vượt Cloudflare và cào dữ liệu từ Vietlott.vn (có thể mất 10-15 giây)..."):
+            data = crawl_html_from_vietlott(url, cfg["type"])
+            
+            if isinstance(data, dict) and "__error__" in data:
+                st.error(f"Lỗi cào dữ liệu: {data['__error__']}. (Lưu ý: Cấu trúc HTML của Vietlott có thể đã thay đổi, hoặc bị chặn IP). Đang dùng dữ liệu mẫu.")
                 df = generate_sample_data(200, cfg)
             else:
-                try:
-                    # Xử lý riêng cho cấu trúc JSON của dự án leoodz/vn-vietlott (Power 6/55)
-                    if isinstance(raw, list):
-                        records = []
-                        for item in raw:
-                            nums = [int(x) for x in item.get('numbers', [])]
-                            if len(nums) == cfg["main_count"]:
-                                records.append({
-                                    "date": pd.to_datetime(item.get('date'), format='%d-%m-%Y', errors='coerce'),
-                                    "numbers": sorted(nums),
-                                    "bonus": int(item.get('bonus')) if item.get('bonus') else None
-                                })
-                        df = pd.DataFrame(records).sort_values('date').reset_index(drop=True)
-                    else:
-                        st.error("Định dạng JSON không khớp. Dùng dữ liệu mẫu.")
-                        df = generate_sample_data(200, cfg)
-                except Exception as e:
-                    st.error(f"Lỗi phân tích JSON: {e}. Dùng dữ liệu mẫu.")
-                    df = generate_sample_data(200, cfg)
+                df = data
+                st.success(f"Đã cào thành công {len(df)} kỳ quay trực tiếp từ Vietlott.vn!")
+            st.session_state['df'] = df
     else:
         df = st.session_state.get('df', generate_sample_data(200, cfg))
         st.session_state['df'] = df
@@ -130,12 +169,11 @@ else:
     st.session_state['df'] = df
 
 # ============================================================
-# HIỂN THỊ & PHÂN TÍCH
+# HIỂN THỊ & PHÂN TÍCH (Giữ nguyên)
 # ============================================================
 if df is not None and not df.empty:
     st.success(f"✅ **{product_name}** — Đã nạp **{len(df)} kỳ** dữ liệu (từ {df['date'].min().date()} đến {df['date'].max().date()})")
 
-    # Chỉ hiển thị bảng 10 kỳ gần nhất
     with st.expander("📊 Xem 10 kỳ gần nhất"):
         tail = df.tail(10).copy()
         if cfg["type"] == "standard":
@@ -144,15 +182,11 @@ if df is not None and not df.empty:
             tail['numbers'] = tail['numbers'].apply(lambda x: ' | '.join([''.join(map(str, d)) for d in x]))
         st.dataframe(tail, use_container_width=True)
 
-    # ============================================================
-    # MÔ PHỎNG QUÁN TÍNH (Dựa trên loại sản phẩm)
-    # ============================================================
     st.header("🌀 Mô phỏng quán tính")
     
     if st.button("🎰 Chạy quay số mô phỏng", type="primary"):
         with st.spinner("Đang tính toán quán tính..."):
             if cfg["type"] == "standard" or cfg["type"] == "keno":
-                # Logic cho các sản phẩm chọn số (Mega, Power, Keno)
                 method = st.radio("Công thức:", ["A. Số kỳ vắng mặt", "B. Cặp số hay đi cùng", "C. Kết hợp"], horizontal=True)
                 
                 def calc_absence(df_in, max_num):
@@ -192,9 +226,8 @@ if df is not None and not df.empty:
                 
                 nums_list = list(scores.keys()); weights = [scores[n] for n in nums_list]
                 picked_main = random.choices(nums_list, weights=weights, k=cfg["main_count"])
-                picked_main = sorted(list(set(picked_main))) # Đảm bảo không trùng cho Keno/Mega
+                picked_main = sorted(list(set(picked_main)))
                 
-                # Đảm bảo đủ số lượng nếu bị trùng
                 while len(picked_main) < cfg["main_count"]:
                     choice = random.choices(nums_list, weights=weights, k=1)[0]
                     if choice not in picked_main: picked_main.append(choice)
@@ -212,23 +245,19 @@ if df is not None and not df.empty:
                 st.success(f"**Bộ số dự đoán:** `{result_text}`")
 
             elif cfg["type"] == "max3d":
-                # Logic cho Max 3D: Tính tần suất xuất hiện của từng chữ số (0-9) ở từng hàng (trăm, chục, đơn vị)
                 digit_freq = [defaultdict(int) for _ in range(3)]
                 for _, row in df.iterrows():
-                    for draw in row['numbers']: # Mỗi draw là một bộ 3 chữ số
-                        for i, d in enumerate(draw):
-                            digit_freq[i][d] += 1
+                    for draw in row['numbers']:
+                        for i, d in enumerate(draw): digit_freq[i][d] += 1
                 
                 def pick_digit(freq_dict):
                     digits = list(range(10)); weights = [freq_dict.get(d, 1) for d in digits]
                     return random.choices(digits, weights=weights, k=1)[0]
                 
-                # Dự đoán 1 bộ 3 số dựa trên tần suất
                 pred_digits = [pick_digit(digit_freq[i]) for i in range(3)]
                 result_text = "".join(map(str, pred_digits))
                 st.success(f"**Bộ 3 số dự đoán (Max 3D):** `{result_text}`")
 
-        # Animation (Chỉ hiển thị cho các sản phẩm có bóng số)
         if cfg["type"] != "max3d":
             st.session_state['final_main'] = picked_main
             st.session_state['final_bonus'] = picked_bonus
