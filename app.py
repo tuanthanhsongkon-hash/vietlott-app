@@ -11,9 +11,6 @@ import streamlit.components.v1 as components
 st.set_page_config(layout="wide", page_title="Vietlott Multi-Product Inertia Simulator")
 st.title("🎲 Vietlott Analyzer & Inertia Simulator (6/45 · 6/55 · 5/35)")
 
-# ============================================================
-# CẤU HÌNH SẢN PHẨM (Theo đúng thể lệ Vietlott)
-# ============================================================
 PRODUCTS = {
     "Mega 6/45": {
         "slug": "645",
@@ -41,9 +38,6 @@ PRODUCTS = {
     },
 }
 
-# ============================================================
-# SIDEBAR
-# ============================================================
 st.sidebar.header("🎯 Sản phẩm")
 product_name = st.sidebar.selectbox("Chọn loại hình:", list(PRODUCTS.keys()))
 cfg = PRODUCTS[product_name]
@@ -54,9 +48,6 @@ data_source = st.sidebar.radio(
     ["URL (GitHub - tự động)", "Tải file JSON lên", "Dữ liệu mẫu (giả lập)"],
 )
 
-# ============================================================
-# HÀM TẢI DỮ LIỆU
-# ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_json_from_url(url: str):
     try:
@@ -117,9 +108,6 @@ def parse_json_to_dataframe(raw, cfg: dict):
         raise ValueError("Không có bản ghi hợp lệ nào được tìm thấy.")
     return df.sort_values('date').reset_index(drop=True)
 
-# ============================================================
-# NẠP DỮ LIỆU
-# ============================================================
 df = None
 if data_source == "URL (GitHub - tự động)":
     url = st.sidebar.text_input("URL JSON:", cfg["default_url"])
@@ -154,9 +142,6 @@ else:
     df = generate_sample_data(n, cfg)
     st.session_state['df'] = df
 
-# ============================================================
-# HIỂN THỊ & PHÂN TÍCH
-# ============================================================
 if df is not None and not df.empty:
     main_max = cfg["main_max"]
     main_count = cfg["main_count"]
@@ -197,9 +182,6 @@ if df is not None and not df.empty:
             sums = df['numbers'].apply(sum)
             st.bar_chart(sums.reset_index(drop=True))
 
-    # ============================================================
-    # QUÁN TÍNH
-    # ============================================================
     st.header("🌀 Mô phỏng quán tính (số chính)")
     method = st.radio(
         "Công thức:",
@@ -297,11 +279,7 @@ if df is not None and not df.empty:
 
         st.session_state['final_main'] = picked_main
         st.session_state['final_bonus'] = picked_bonus
-        st.session_state['anim_key'] = st.session_state.get('anim_key', 0) + 1
 
-# ============================================================
-# ANIMATION
-# ============================================================
 def render_animation(main_numbers, bonus_number, main_max, bonus_max, duration_ms=2500):
     main_json = json.dumps(main_numbers)
     bonus_json = json.dumps(bonus_number)
@@ -385,7 +363,6 @@ def render_animation(main_numbers, bonus_number, main_max, bonus_max, duration_m
     return html
 
 if 'final_main' in st.session_state:
-    key = st.session_state.get('anim_key', 0)
     components.html(
         render_animation(
             st.session_state['final_main'],
@@ -394,7 +371,6 @@ if 'final_main' in st.session_state:
             cfg["bonus_max"],
         ),
         height=160,
-        key=f"anim_{key}",
     )
 else:
     st.info("👈 Chọn sản phẩm và nguồn dữ liệu ở sidebar, sau đó bấm **Chạy quay số mô phỏng**.")
