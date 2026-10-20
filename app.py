@@ -18,22 +18,22 @@ st.title("🎲 Vietlott Analyzer & Inertia Simulator (Nâng cấp)")
 PRODUCTS = {
     "Mega 6/45": {
         "type": "standard", "main_count": 6, "main_max": 45, "has_bonus": False, "bonus_max": None,
-        "api_url": "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power645/2024.json"
+        "api_key": "mega645"  # Key trong API 383.im
     },
     "Power 6/55": {
         "type": "standard", "main_count": 6, "main_max": 55, "has_bonus": True, "bonus_max": 55,
-        "api_url": "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power655/2024.json"
+        "api_key": "power655"
     },
     "Lotto 5/35": {
         "type": "standard", "main_count": 5, "main_max": 35, "has_bonus": True, "bonus_max": 12,
-        "api_url": "" # Không có API ổn định, khuyên dùng dữ liệu mẫu hoặc upload file
+        "api_key": None  # API 383.im chưa hỗ trợ Lotto 5/35
     },
     "Keno (1-80)": {
         "type": "keno", "main_count": 20, "main_max": 80, "has_bonus": False, "bonus_max": None,
-        "api_url": ""
+        "api_key": None
     },
     "Max 3D": {
-        "type": "max3d", "digit_count": 3, "total_balls": 100, "api_url": ""
+        "type": "max3d", "digit_count": 3, "total_balls": 100, "api_key": None
     }
 }
 
@@ -45,13 +45,54 @@ product_name = st.sidebar.selectbox("Chọn loại hình:", list(PRODUCTS.keys()
 cfg = PRODUCTS[product_name]
 
 st.sidebar.header("📂 Nguồn dữ liệu")
-data_source = st.sidebar.radio(
-    "Chọn nguồn:", 
-    ["Dữ liệu mẫu (giả lập)", "API GitHub (Tự động)", "Tải file JSON lên"]
-)
+# Nếu sản phẩm có api_key thì ưu tiên API thật, ngược lại chỉ có mẫu hoặc upload
+source_options = ["Dữ liệu mẫu (giả lập)", "Tải file JSON lên"]
+if cfg.get("api_key"):
+    source_options.insert(0, "API 383.im (Dữ liệu thật)")
+
+data_source = st.sidebar.radio("Chọn nguồn:", source_options)
 
 # ============================================================
-# HÀM XỬ LÝ DỮ LIỆU
+# HÀM LẤY DỮ LIỆU TỪ API 383.im
+# ============================================================
+@st.cache_data(ttl=600, show_spinner=False)  # Cache 10 phút
+def fetch_from_383im(api_key: str):
+    """Lấy dữ liệu mới nhất từ API 383.im"""
+    try:
+        url = "https://api.383.im/lottery/live.json"
+        res = requests.get(url, timeout=15)
+        res.raise_for_status()
+        raw = res.json()
+        
+        # Kiểm tra xem api_key có trong dữ liệu trả về không
+        if api_key not in raw:
+            raise ValueError(f"Không tìm thấy dữ liệu cho {api_key} trong API.")
+        
+        item = raw[api_key]
+        numbers = [int(x) for x in item.get("numbers", [])]
+        date_str = item.get("d")  # Định dạng YYYY-MM-DD
+        
+        bonus = None
+        if api_key == "power655" and "special" in item:
+            bonus = int(item["special"])
+        
+        # Tạo DataFrame 1 dòng (chỉ có kết quả mới nhất)
+        # Để có nhiều kỳ, API này không cung cấp lịch sử, nên ta chỉ lấy kỳ mới nhất.
+        # Tuy nhiên, để mô phỏng quán tính cần nhiều kỳ, ta sẽ kết hợp với dữ liệu mẫu cho các kỳ cũ.
+        # Cách tốt nhất là dùng API này để cập nhật kỳ mới nhất, còn lịch sử vẫn dùng mẫu.
+        # Ở đây, để đơn giản, ta sẽ trả về 1 dòng và sẽ merge với dữ liệu mẫu trong logic chính.
+        
+        record = {
+            "date": pd.to_datetime(date_str),
+            "numbers": sorted(numbers),
+            "bonus": bonus
+        }
+        return pd.DataFrame([record])
+    except Exception as e:
+        return {"__error__": str(e)}
+
+# ============================================================
+# HÀM TẠO DỮ LIỆU MẪU
 # ============================================================
 def generate_sample_data(n_draws: int, cfg: dict):
     np.random.seed(42)
@@ -81,8 +122,7 @@ def generate_sample_data(n_draws: int, cfg: dict):
 
 def parse_json_smart(raw, cfg):
     records = []
-    # Hàm xử lý linh hoạt nhiều cấu trúc JSON khác nhau
-    if isinstance(raw, list): # Dạng mảng
+    if isinstance(raw, list):
         for item in raw:
             nums = item.get('numbers') or item.get('result')
             if not nums: continue
@@ -96,7 +136,7 @@ def parse_json_smart(raw, cfg):
                     "numbers": sorted(nums),
                     "bonus": int(item.get('bonus')) if item.get('bonus') else None
                 })
-    elif isinstance(raw, dict): # Dạng dict {"date": {"result": [...]}}
+    elif isinstance(raw, dict):
         for k, v in raw.items():
             if isinstance(v, dict) and ('result' in v or 'numbers' in v):
                 nums = v.get('result') or v.get('numbers')
@@ -117,17 +157,20 @@ def parse_json_smart(raw, cfg):
 # ============================================================
 df = None
 
-if data_source == "API GitHub (Tự động)":
-    if st.sidebar.button("🔄 Tải dữ liệu từ API") and cfg.get("api_url"):
-        with st.spinner("Đang tải dữ liệu từ GitHub..."):
-            try:
-                res = requests.get(cfg["api_url"], timeout=10)
-                res.raise_for_status()
-                df = parse_json_smart(res.json(), cfg)
-                st.success("Đã tải dữ liệu thật thành công!")
-            except Exception as e:
-                st.error(f"Lỗi API: {e}. Vui lòng dùng 'Tải file JSON lên' hoặc 'Dữ liệu mẫu'.")
+if data_source == "API 383.im (Dữ liệu thật)":
+    if st.sidebar.button("🔄 Tải dữ liệu mới nhất"):
+        with st.spinner("Đang kết nối API 383.im..."):
+            api_data = fetch_from_383im(cfg["api_key"])
+            if isinstance(api_data, dict) and "__error__" in api_data:
+                st.warning(f"Không lấy được dữ liệu từ API: {api_data['__error__']}. Dùng dữ liệu mẫu.")
                 df = generate_sample_data(200, cfg)
+            else:
+                # Kết hợp kết quả mới nhất từ API với dữ liệu mẫu cho các kỳ cũ
+                # (Vì API chỉ trả về kỳ mới nhất, ta cần thêm lịch sử để tính quán tính)
+                sample_df = generate_sample_data(199, cfg)
+                df = pd.concat([sample_df, api_data], ignore_index=True)
+                df = df.sort_values('date').reset_index(drop=True)
+                st.success(f"Đã cập nhật kỳ mới nhất từ API (ngày {api_data['date'].iloc[0].date()}). Các kỳ cũ dùng dữ liệu mẫu để mô phỏng.")
             st.session_state['df'] = df
     else:
         df = st.session_state.get('df', generate_sample_data(200, cfg))
