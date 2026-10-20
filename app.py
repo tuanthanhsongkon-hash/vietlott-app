@@ -4,8 +4,8 @@ import numpy as np
 import json
 import random
 import requests
-import cloudscraper # Thêm thư viện mới
-from bs4 import BeautifulSoup # Thêm thư viện mới
+import cloudscraper
+from bs4 import BeautifulSoup
 from collections import defaultdict
 from itertools import combinations
 import streamlit.components.v1 as components
@@ -16,20 +16,20 @@ st.set_page_config(layout="wide", page_title="Vietlott Multi-Product Inertia Sim
 st.title("🎲 Vietlott Analyzer & Inertia Simulator (Nâng cấp)")
 
 # ============================================================
-# CẤU HÌNH SẢN PHẨM (Cập nhật Link HTML thật)
+# CẤU HÌNH SẢN PHẨM (Cập nhật URL chuẩn .html)
 # ============================================================
 PRODUCTS = {
     "Mega 6/45": {
         "type": "standard", "main_count": 6, "main_max": 45, "has_bonus": False, "bonus_max": None,
-        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/so-ket-qua?gameid=3&nocatche=1"
+        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/645.html"
     },
     "Power 6/55": {
         "type": "standard", "main_count": 6, "main_max": 55, "has_bonus": True, "bonus_max": 55,
-        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/so-ket-qua?gameid=4&nocatche=1"
+        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/655.html"
     },
     "Lotto 5/35": {
         "type": "standard", "main_count": 5, "main_max": 35, "has_bonus": True, "bonus_max": 12,
-        "default_url": "" 
+        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/535.html"
     },
     "Keno (1-80)": {
         "type": "keno", "main_count": 20, "main_max": 80, "has_bonus": False, "bonus_max": None,
@@ -51,65 +51,56 @@ st.sidebar.header("📂 Nguồn dữ liệu")
 data_source = st.sidebar.radio("Chọn nguồn:", ["Dữ liệu mẫu (giả lập)", "URL (Web Vietlott - Tự động)"])
 
 # ============================================================
-# HÀM CÀO DỮ LIỆU TỪ WEB VIETLOTT
+# HÀM CÀO DỮ LIỆU TỪ WEB VIETLOTT (Đã tối ưu Header & Selector)
 # ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def crawl_html_from_vietlott(url: str, product_type: str):
     try:
-        # Dùng cloudscraper để vượt Cloudflare
+        # Thêm headers giả lập trình duyệt thật để tránh bị chặn
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://vietlott.vn/'
+        }
+        
         scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        response = scraper.get(url, timeout=20)
+        response = scraper.get(url, headers=headers, timeout=20)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'lxml')
         records = []
         
-        # Tìm kiếm phần tử chứa kết quả (Vietlott thường dùng thẻ div hoặc table với class chứa 'chitietketqua')
-        # Đoạn code này giả định cấu trúc HTML của vietlott.vn chứa các con số trong thẻ span có class 'txt-rs'
-        # Bạn có thể cần Inspect (F12) trang web để tinh chỉnh class nếu cần
-        
-        # Lấy danh sách các kỳ quay (Thường nằm trong các thẻ <div class="chitietketqua"> hoặc tương tự)
-        rows = soup.find_all('div', class_='chitietketqua') 
-        if not rows:
-            # Thử cách khác: tìm thẻ chứa class 'ketqua'
-            rows = soup.find_all('div', class_='ketqua')
-        
-        if not rows:
-            # Nếu không tìm thấy, thử tìm tất cả các số có class 'txt-rs' (đây là class phổ biến của vietlott)
-            # Đây là fallback cho cấu trúc trang hiện tại
-            number_elements = soup.find_all('span', class_='txt-rs')
-            if number_elements:
-                nums = [int(el.text.strip()) for el in number_elements if el.text.strip().isdigit()]
-                # Nhóm 6 số (hoặc 5 số) thành 1 kỳ quay
-                size = cfg["main_count"]
-                for i in range(0, len(nums), size):
-                    if i + size <= len(nums):
-                        records.append({"date": pd.Timestamp.today(), "numbers": sorted(nums[i:i+size]), "bonus": None})
-                return pd.DataFrame(records)
-            else:
-                raise ValueError("Không tìm thấy cấu trúc dữ liệu phù hợp trên trang.")
-
-        # Xử lý từng dòng kết quả (nếu có cấu trúc bảng)
-        for row in rows:
-            # Trích xuất ngày tháng (cần tinh chỉnh tùy theo cấu trúc thực tế)
-            date_text = row.find('span', class_='ngay') or row.find('td', class_='ngay')
-            date_val = pd.to_datetime(date_text.text.strip(), dayfirst=True, errors='coerce') if date_text else pd.Timestamp.today()
+        # Lấy container chứa kết quả (dựa trên cấu trúc vietlott.vn)
+        container = soup.find('div', class_='chitietketqua')
+        if not container:
+            raise ValueError("Không tìm thấy thẻ chứa kết quả (div.chitietketqua).")
             
-            # Trích xuất các con số
-            num_elements = row.find_all('span', class_='txt-rs')
-            nums = [int(el.text.strip()) for el in num_elements if el.text.strip().isdigit()]
-            
-            if len(nums) >= cfg["main_count"]:
-                records.append({
-                    "date": date_val,
-                    "numbers": sorted(nums[:cfg["main_count"]]),
-                    "bonus": int(nums[cfg["main_count"]]) if len(nums) > cfg["main_count"] else None
-                })
+        # Lấy ngày quay
+        date_text = container.find('h5')
+        date_val = pd.Timestamp.today()
+        if date_text:
+            # Tìm định dạng ngày DD/MM/YYYY trong text
+            match = re.search(r'(\d{2}/\d{2}/\d{4})', date_text.text)
+            if match:
+                date_val = pd.to_datetime(match.group(1), format='%d/%m/%Y', errors='coerce')
+        
+        # Lấy các số
+        # Số chính thường nằm trong class 'bong_tron' (hoặc tương tự)
+        num_elements = container.find_all('span', class_='bong_tron')
+        nums = [int(el.text.strip()) for el in num_elements if el.text.strip().isdigit()]
+        
+        if len(nums) >= cfg["main_count"]:
+            records.append({
+                "date": date_val,
+                "numbers": sorted(nums[:cfg["main_count"]]),
+                "bonus": int(nums[cfg["main_count"]]) if len(nums) > cfg["main_count"] else None
+            })
                 
         if not records:
-            raise ValueError("Không thể bóc tách dữ liệu từ HTML.")
+            raise ValueError("Không thể bóc tách dữ liệu số từ HTML.")
             
-        return pd.DataFrame(records).sort_values('date').reset_index(drop=True)
+        return pd.DataFrame(records)
         
     except Exception as e:
         return {"__error__": str(e)}
@@ -150,12 +141,36 @@ df = None
 if data_source == "URL (Web Vietlott - Tự động)":
     url = st.sidebar.text_input("URL Trang Kết Quả:", cfg.get("default_url", ""))
     if st.sidebar.button("🔄 Tải dữ liệu từ Web") and url:
-        with st.spinner("Đang vượt Cloudflare và cào dữ liệu từ Vietlott.vn (có thể mất 10-15 giây)..."):
+        with st.spinner("Đang kết nối và cào dữ liệu..."):
             data = crawl_html_from_vietlott(url, cfg["type"])
             
             if isinstance(data, dict) and "__error__" in data:
-                st.error(f"Lỗi cào dữ liệu: {data['__error__']}. (Lưu ý: Cấu trúc HTML của Vietlott có thể đã thay đổi, hoặc bị chặn IP). Đang dùng dữ liệu mẫu.")
-                df = generate_sample_data(200, cfg)
+                # Nếu cào HTML thất bại, thử dùng API dự phòng của vietvudanh
+                st.warning(f"Lỗi cào trực tiếp: {data['__error__']}. Đang thử nguồn dữ liệu dự phòng...")
+                try:
+                    api_url = "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power645/2024.json"
+                    if cfg["main_max"] == 55:
+                        api_url = "https://raw.githubusercontent.com/leoodz/vn-vietlott/main/results/power6x55.json"
+                    
+                    res = requests.get(api_url, timeout=10)
+                    if res.status_code == 200:
+                        raw = res.json()
+                        records = []
+                        for item in raw:
+                            nums = [int(x) for x in item.get('numbers', [])]
+                            if len(nums) == cfg["main_count"]:
+                                records.append({
+                                    "date": pd.to_datetime(item.get('date'), format='%d-%m-%Y', errors='coerce'),
+                                    "numbers": sorted(nums),
+                                    "bonus": int(item.get('bonus')) if item.get('bonus') else None
+                                })
+                        df = pd.DataFrame(records).sort_values('date').reset_index(drop=True)
+                        st.success("Đã tải dữ liệu thật từ nguồn dự phòng!")
+                    else:
+                        raise Exception("API dự phòng không phản hồi.")
+                except Exception as e:
+                    st.error(f"Tất cả nguồn đều thất bại: {e}. Dùng dữ liệu mẫu.")
+                    df = generate_sample_data(200, cfg)
             else:
                 df = data
                 st.success(f"Đã cào thành công {len(df)} kỳ quay trực tiếp từ Vietlott.vn!")
