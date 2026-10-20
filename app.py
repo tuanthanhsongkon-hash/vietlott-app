@@ -4,39 +4,36 @@ import numpy as np
 import json
 import random
 import requests
-import cloudscraper
-from bs4 import BeautifulSoup
 from collections import defaultdict
 from itertools import combinations
 import streamlit.components.v1 as components
-import re
 
 # Cấu hình trang
 st.set_page_config(layout="wide", page_title="Vietlott Multi-Product Inertia Simulator")
 st.title("🎲 Vietlott Analyzer & Inertia Simulator (Nâng cấp)")
 
 # ============================================================
-# CẤU HÌNH SẢN PHẨM (Cập nhật URL chuẩn .html)
+# CẤU HÌNH SẢN PHẨM
 # ============================================================
 PRODUCTS = {
     "Mega 6/45": {
         "type": "standard", "main_count": 6, "main_max": 45, "has_bonus": False, "bonus_max": None,
-        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/645.html"
+        "api_url": "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power645/2024.json"
     },
     "Power 6/55": {
         "type": "standard", "main_count": 6, "main_max": 55, "has_bonus": True, "bonus_max": 55,
-        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/655.html"
+        "api_url": "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power655/2024.json"
     },
     "Lotto 5/35": {
         "type": "standard", "main_count": 5, "main_max": 35, "has_bonus": True, "bonus_max": 12,
-        "default_url": "https://vietlott.vn/vi/trung-thuong/ket-qua-trung-thuong/535.html"
+        "api_url": "" # Không có API ổn định, khuyên dùng dữ liệu mẫu hoặc upload file
     },
     "Keno (1-80)": {
         "type": "keno", "main_count": 20, "main_max": 80, "has_bonus": False, "bonus_max": None,
-        "default_url": ""
+        "api_url": ""
     },
     "Max 3D": {
-        "type": "max3d", "digit_count": 3, "total_balls": 100, "default_url": ""
+        "type": "max3d", "digit_count": 3, "total_balls": 100, "api_url": ""
     }
 }
 
@@ -48,65 +45,13 @@ product_name = st.sidebar.selectbox("Chọn loại hình:", list(PRODUCTS.keys()
 cfg = PRODUCTS[product_name]
 
 st.sidebar.header("📂 Nguồn dữ liệu")
-data_source = st.sidebar.radio("Chọn nguồn:", ["Dữ liệu mẫu (giả lập)", "URL (Web Vietlott - Tự động)"])
+data_source = st.sidebar.radio(
+    "Chọn nguồn:", 
+    ["Dữ liệu mẫu (giả lập)", "API GitHub (Tự động)", "Tải file JSON lên"]
+)
 
 # ============================================================
-# HÀM CÀO DỮ LIỆU TỪ WEB VIETLOTT (Đã tối ưu Header & Selector)
-# ============================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def crawl_html_from_vietlott(url: str, product_type: str):
-    try:
-        # Thêm headers giả lập trình duyệt thật để tránh bị chặn
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://vietlott.vn/'
-        }
-        
-        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-        response = scraper.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'lxml')
-        records = []
-        
-        # Lấy container chứa kết quả (dựa trên cấu trúc vietlott.vn)
-        container = soup.find('div', class_='chitietketqua')
-        if not container:
-            raise ValueError("Không tìm thấy thẻ chứa kết quả (div.chitietketqua).")
-            
-        # Lấy ngày quay
-        date_text = container.find('h5')
-        date_val = pd.Timestamp.today()
-        if date_text:
-            # Tìm định dạng ngày DD/MM/YYYY trong text
-            match = re.search(r'(\d{2}/\d{2}/\d{4})', date_text.text)
-            if match:
-                date_val = pd.to_datetime(match.group(1), format='%d/%m/%Y', errors='coerce')
-        
-        # Lấy các số
-        # Số chính thường nằm trong class 'bong_tron' (hoặc tương tự)
-        num_elements = container.find_all('span', class_='bong_tron')
-        nums = [int(el.text.strip()) for el in num_elements if el.text.strip().isdigit()]
-        
-        if len(nums) >= cfg["main_count"]:
-            records.append({
-                "date": date_val,
-                "numbers": sorted(nums[:cfg["main_count"]]),
-                "bonus": int(nums[cfg["main_count"]]) if len(nums) > cfg["main_count"] else None
-            })
-                
-        if not records:
-            raise ValueError("Không thể bóc tách dữ liệu số từ HTML.")
-            
-        return pd.DataFrame(records)
-        
-    except Exception as e:
-        return {"__error__": str(e)}
-
-# ============================================================
-# HÀM DỮ LIỆU MẪU (Giữ nguyên)
+# HÀM XỬ LÝ DỮ LIỆU
 # ============================================================
 def generate_sample_data(n_draws: int, cfg: dict):
     np.random.seed(42)
@@ -134,50 +79,74 @@ def generate_sample_data(n_draws: int, cfg: dict):
             records.append({"date": d, "numbers": results, "bonus": None})
     return pd.DataFrame(records)
 
+def parse_json_smart(raw, cfg):
+    records = []
+    # Hàm xử lý linh hoạt nhiều cấu trúc JSON khác nhau
+    if isinstance(raw, list): # Dạng mảng
+        for item in raw:
+            nums = item.get('numbers') or item.get('result')
+            if not nums: continue
+            if isinstance(nums, str):
+                nums = [int(x) for x in nums.replace(',', ' ').split() if x.strip().isdigit()]
+            nums = [int(x) for x in nums]
+            if len(nums) == cfg["main_count"] and max(nums) <= cfg["main_max"]:
+                date_val = item.get('date') or item.get('ngay')
+                records.append({
+                    "date": pd.to_datetime(date_val, dayfirst=True, errors='coerce'),
+                    "numbers": sorted(nums),
+                    "bonus": int(item.get('bonus')) if item.get('bonus') else None
+                })
+    elif isinstance(raw, dict): # Dạng dict {"date": {"result": [...]}}
+        for k, v in raw.items():
+            if isinstance(v, dict) and ('result' in v or 'numbers' in v):
+                nums = v.get('result') or v.get('numbers')
+                if isinstance(nums, str):
+                    nums = [int(x) for x in nums.replace(',', ' ').split() if x.strip().isdigit()]
+                nums = [int(x) for x in nums]
+                if len(nums) == cfg["main_count"] and max(nums) <= cfg["main_max"]:
+                    records.append({
+                        "date": pd.to_datetime(k, errors='coerce'),
+                        "numbers": sorted(nums),
+                        "bonus": None
+                    })
+    if not records: raise ValueError("Cấu trúc JSON không phù hợp.")
+    return pd.DataFrame(records).sort_values('date').reset_index(drop=True)
+
 # ============================================================
 # NẠP DỮ LIỆU
 # ============================================================
 df = None
-if data_source == "URL (Web Vietlott - Tự động)":
-    url = st.sidebar.text_input("URL Trang Kết Quả:", cfg.get("default_url", ""))
-    if st.sidebar.button("🔄 Tải dữ liệu từ Web") and url:
-        with st.spinner("Đang kết nối và cào dữ liệu..."):
-            data = crawl_html_from_vietlott(url, cfg["type"])
-            
-            if isinstance(data, dict) and "__error__" in data:
-                # Nếu cào HTML thất bại, thử dùng API dự phòng của vietvudanh
-                st.warning(f"Lỗi cào trực tiếp: {data['__error__']}. Đang thử nguồn dữ liệu dự phòng...")
-                try:
-                    api_url = "https://raw.githubusercontent.com/vietvudanh/vietlott-data/main/data/power645/2024.json"
-                    if cfg["main_max"] == 55:
-                        api_url = "https://raw.githubusercontent.com/leoodz/vn-vietlott/main/results/power6x55.json"
-                    
-                    res = requests.get(api_url, timeout=10)
-                    if res.status_code == 200:
-                        raw = res.json()
-                        records = []
-                        for item in raw:
-                            nums = [int(x) for x in item.get('numbers', [])]
-                            if len(nums) == cfg["main_count"]:
-                                records.append({
-                                    "date": pd.to_datetime(item.get('date'), format='%d-%m-%Y', errors='coerce'),
-                                    "numbers": sorted(nums),
-                                    "bonus": int(item.get('bonus')) if item.get('bonus') else None
-                                })
-                        df = pd.DataFrame(records).sort_values('date').reset_index(drop=True)
-                        st.success("Đã tải dữ liệu thật từ nguồn dự phòng!")
-                    else:
-                        raise Exception("API dự phòng không phản hồi.")
-                except Exception as e:
-                    st.error(f"Tất cả nguồn đều thất bại: {e}. Dùng dữ liệu mẫu.")
-                    df = generate_sample_data(200, cfg)
-            else:
-                df = data
-                st.success(f"Đã cào thành công {len(df)} kỳ quay trực tiếp từ Vietlott.vn!")
+
+if data_source == "API GitHub (Tự động)":
+    if st.sidebar.button("🔄 Tải dữ liệu từ API") and cfg.get("api_url"):
+        with st.spinner("Đang tải dữ liệu từ GitHub..."):
+            try:
+                res = requests.get(cfg["api_url"], timeout=10)
+                res.raise_for_status()
+                df = parse_json_smart(res.json(), cfg)
+                st.success("Đã tải dữ liệu thật thành công!")
+            except Exception as e:
+                st.error(f"Lỗi API: {e}. Vui lòng dùng 'Tải file JSON lên' hoặc 'Dữ liệu mẫu'.")
+                df = generate_sample_data(200, cfg)
             st.session_state['df'] = df
     else:
         df = st.session_state.get('df', generate_sample_data(200, cfg))
         st.session_state['df'] = df
+
+elif data_source == "Tải file JSON lên":
+    uploaded = st.sidebar.file_uploader("Chọn file JSON:", type=["json"])
+    if uploaded is not None:
+        try:
+            raw = json.load(uploaded)
+            df = parse_json_smart(raw, cfg)
+            st.success(f"Đã đọc thành công {len(df)} kỳ từ file của bạn!")
+            st.session_state['df'] = df
+        except Exception as e:
+            st.error(f"Lỗi đọc file: {e}")
+    else:
+        df = st.session_state.get('df', generate_sample_data(200, cfg))
+        st.session_state['df'] = df
+
 else:
     n = st.sidebar.slider("Số kỳ mẫu:", 50, 500, 200, 50)
     df = generate_sample_data(n, cfg)
